@@ -1,0 +1,8 @@
+# 10_breakbeat_like.mosaic
+# "Breakbeat-ish" pattern using grain indices.
+# Try changing the numbers to lock onto different transients.
+loop(4) {
+  seq([30,30,31,30,  40,41,40,39])
+  seq([60,62,60,58,  70,70,72,74])
+}
+clip(10.0, 2.0)

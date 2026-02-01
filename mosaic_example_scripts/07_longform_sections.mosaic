@@ -1,0 +1,6 @@
+# 07_longform_sections.mosaic
+# Three sections of the mosaic output stitched together.
+# Great for auditioning different regions quickly.
+grains(0.0, 6.0)
+grains(12.0, 6.0)
+grains(24.0, 8.0)

@@ -1,0 +1,6 @@
+# 01_intro_clips.mosaic
+# Simple time-based slicing of the mosaic output (seconds).
+clip(0.0, 2.0)
+clip(2.0, 1.5)
+clip(4.0, 2.5)
+clip(7.0, 1.0)

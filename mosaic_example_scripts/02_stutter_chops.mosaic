@@ -1,0 +1,9 @@
+# 02_stutter_chops.mosaic
+# Short stutters + a longer release.
+loop(8) {
+  clip(1.00, 0.08)
+  clip(1.08, 0.08)
+  clip(1.16, 0.08)
+  clip(1.24, 0.08)
+}
+clip(1.32, 1.8)

@@ -1,0 +1,8 @@
+# 04_looped_motif.mosaic
+# A repeating motif: a short clip, then a small grain run.
+loop(4) {
+  clip(0.5, 0.6)
+  grain(12, 4)
+  clip(2.0, 0.4)
+  seq([18,19,18,17])
+}

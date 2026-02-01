@@ -1,0 +1,8 @@
+# 06_sparse_hits.mosaic
+# Sparse "hits" using very short clips (seconds), with gaps implied by later start points.
+clip(5.00, 0.10)
+clip(5.40, 0.08)
+clip(5.85, 0.12)
+clip(6.30, 0.09)
+clip(7.10, 0.14)
+clip(7.80, 0.10)

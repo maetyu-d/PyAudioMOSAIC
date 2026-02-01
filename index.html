@@ -1,0 +1,1263 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Pyodide Audio Mosaic + Scripted Playback (MFCC + Transforms + Smarter Scripts)</title>
+    <style>
+/* ===== BRUTALIST GREY SYMPHONY UI ===== */
+
+:root {
+  --bg: #111;
+  --panel: #1a1a1a;
+  --panel2: #222;
+  --border: #444;
+  --text: #ddd;
+  --muted: #888;
+  --accent: #bbb;
+  --danger: #ff4444;
+  --ok: #88ff88;
+  --warn: #ffcc55;
+
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+body {
+  margin: 0;
+  padding: 18px;
+  font-family: var(--mono);
+  background: var(--bg);
+  color: var(--text);
+  letter-spacing: 0.2px;
+}
+
+h1, h3 {
+  font-weight: 600;
+  margin: 0 0 12px 0;
+  text-transform: uppercase;
+  font-size: 14px;
+  color: var(--accent);
+}
+
+.card {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  padding: 12px;
+  margin-top: 12px;
+  border-radius: 0;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+  align-items: center;
+}
+
+label {
+  font-size: 11px;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+input,
+select,
+textarea {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 6px;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 0;
+  outline: none;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--accent);
+}
+
+button {
+  font-family: var(--mono);
+  background: #000;
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px;
+  cursor: pointer;
+  text-transform: uppercase;
+  font-size: 11px;
+  transition: background 0.15s;
+}
+
+button:hover {
+  background: #222;
+}
+
+button:disabled {
+  opacity: 0.25;
+  cursor: not-allowed;
+}
+
+.pill {
+  padding: 3px 6px;
+  border-radius: 0;
+  font-size: 10px;
+  background: #000;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.log {
+  background: #000;
+  border: 1px solid var(--border);
+  padding: 10px;
+  font-size: 11px;
+  min-height: 90px;
+  white-space: pre-wrap;
+  overflow-y: auto;
+}
+
+.small {
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 8px;
+}
+
+.ok { color: var(--ok); }
+.warn { color: var(--warn); }
+.err { color: var(--danger); }
+
+code {
+  background: #000;
+  padding: 1px 4px;
+  border: 1px solid #333;
+  border-radius: 0;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(255,255,255,0.015),
+      rgba(255,255,255,0.015) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+  mix-blend-mode: overlay;
+}
+
+/* === SCRIPT PANE FULL WIDTH OVERRIDE === */
+#scriptBox textarea,
+textarea#script,
+textarea.script {
+  width: 100% !important;
+  display: block;
+  box-sizing: border-box;
+}
+
+</style>
+  </head>
+  <body>
+    <h1>PyAudioMOSAIC</h1>
+
+    <div class="card">
+      <div class="row">
+        <label>WAV input: <input id="file" type="file" accept=".wav,audio/wav" /></label>
+        <label>Grain (ms): <input id="grainMs" type="number" min="5" max="200" step="1" value="40" /></label>
+        <label>Hop (ms): <input id="hopMs" type="number" min="2" max="200" step="1" value="20" /></label>
+        <label>Dict size (grains): <input id="dictSize" type="number" min="32" max="4096" step="1" value="512" /></label>
+      </div>
+
+      <div class="row" style="margin-top:10px;">
+        <span class="pill">Matching</span>
+        <label>
+          Feature mode:
+          <select id="featureMode">
+            <option value="basic" selected>Basic (RMS + centroid)</option>
+            <option value="mfcc">MFCC (timbre)</option>
+          </select>
+        </label>
+
+        <label>n_mels: <input id="nMels" type="number" min="10" max="128" step="1" value="40" /></label>
+        <label>n_mfcc: <input id="nMfcc" type="number" min="6" max="40" step="1" value="13" /></label>
+      </div>
+
+      <div class="row" style="margin-top: 10px;">
+        <button id="initBtn">Init Pyodide</button>
+        <button id="buildBtn" disabled>Build Mosaic</button>
+        <button id="playMosaicBtn" disabled>Play Mosaic (whole)</button>
+        <button id="stopBtn" disabled>Stop</button>
+      </div>
+
+      <div class="row" style="margin-top: 10px;">
+        <button id="exportMosaicBtn" disabled>Export Mosaic WAV</button>
+
+        <label>Export Duration (sec): <input id="exportDur" type="number" value="5" min="0.1" step="0.1" /></label>
+
+        <label>
+          Export Channels:
+          <select id="exportCh">
+            <option value="as-is" selected>as-is</option>
+            <option value="mono">mono</option>
+            <option value="stereo">stereo</option>
+          </select>
+        </label>
+
+        <label>
+          Bit depth:
+          <select id="exportBitDepth">
+            <option value="16" selected>16-bit PCM</option>
+            <option value="24">24-bit PCM</option>
+            <option value="32">32-bit PCM</option>
+            <option value="f32">32-bit float</option>
+          </select>
+        </label>
+      </div>
+
+      <p class="small">
+        <b>MFCC mode</b> usually produces much more coherent timbral mosaics, especially on musical material. Features are computed on a mono downmix,
+        but grains are copied and overlap-added in true stereo.
+      </p>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <h3>Script</h3>
+      <p class="small">
+        Durations are in <b>seconds</b>. In addition to <code>clip/grains/grain/seq/loop</code>, you now have:
+        <br/>• <code>wait(sec)</code> — advance timeline without playing audio
+        <br/>• <code>let name = expr</code> — variables
+        <br/>• Generators: <code>rand(a,b)</code>, <code>randi(a,b)</code>, <code>choose([..])</code>, <code>shuffle([..])</code>, <code>seed(n)</code>
+        <br/>• Grain transforms via an options object as last arg: <code>{rate:1.0, gain:1.0, pan:0.0, rev:false}</code>
+        <br/><span class="small">Example: <code>clip(0, 1, {rate:0.8, pan:-0.4, gain:0.8})</code></span>
+      </p>
+
+      <textarea id="script"># --- Smarter script examples ---
+seed(7)
+
+let base = 2.0
+clip(0.0, base, {gain:0.9})
+
+# random micro-chops with pan + rate
+loop(12) {
+  let t = rand(4.0, 8.0)
+  let d = rand(0.05, 0.18)
+  clip(t, d, {pan: rand(-0.8, 0.8), rate: rand(0.7, 1.4), gain: 0.8})
+}
+
+wait(0.5)
+
+# a motif chosen from a few grain sequences
+let motifs = [
+  [10,11,12,13,14,15],
+  [40,42,44,46,48,50],
+  [80,79,78,77,76,75]
+]
+
+loop(3) {
+  let m = choose(motifs)
+  seq(m, {rate: 1.0, gain: 0.9})
+  grain(randi(120, 260), 4, {rev: true, pan: rand(-0.5, 0.5)})
+}</textarea>
+
+      <div class="row" style="margin-top: 10px;">
+        <button id="runScriptBtn" disabled>Run Script</button>
+        <button id="stopScriptBtn" disabled>Stop Script</button>
+        <button id="renderScriptBtn" disabled>Render Script to New Buffer</button>
+        <button id="exportRenderedBtn" disabled>Export Rendered WAV</button>
+
+        <label style="margin-left: 6px;">
+          Load Script:
+          <input id="scriptFile" type="file" accept=".txt,.mosaic,.script" />
+        </label>
+      </div>
+
+      <p class="small">
+        Transforms apply at playback time via WebAudio nodes. <code>rate</code> changes playback speed (and the timeline advances by the actual played duration).
+        <code>rev</code> plays from a cached reversed mosaic buffer.
+      </p>
+    </div>
+
+    <div class="card" style="margin-top: 14px;">
+      <h3>Log</h3>
+      <div id="log" class="log"></div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js"></script>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+
+      const logEl = $("log");
+      function log(msg, cls="") {
+        const div = document.createElement("div");
+        if (cls) div.className = cls;
+        div.textContent = msg;
+        logEl.appendChild(div);
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+      function clearLog() { logEl.textContent = ""; }
+
+      let pyodide = null;
+      let audioCtx = null;
+
+      let mosaicBuffer = null;      // AudioBuffer (stereo)
+      let mosaicMeta = null;
+      let reversedMosaicBuffer = null;
+
+      let lastRenderedBuffer = null;
+      let playingNodes = [];
+
+      function ensureAudioContext() {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        return audioCtx;
+      }
+
+      async function initPy() {
+        clearLog();
+        log("Loading Pyodide...", "warn");
+        pyodide = await loadPyodide();
+        log("Pyodide loaded.", "ok");
+
+        log("Loading numpy...", "warn");
+        await pyodide.loadPackage(["numpy"]);
+        log("numpy loaded.", "ok");
+
+        log("Installing Python DSP code...", "warn");
+        const pySource = document.getElementById("pycode").textContent;
+        await pyodide.runPythonAsync(pySource);
+        log("Python DSP code ready.", "ok");
+
+        $("buildBtn").disabled = false;
+      }
+
+      async function buildMosaicFromWavBytes(wavBytes, grainMs, hopMs, dictSize, featureMode, nMels, nMfcc) {
+        if (!pyodide) throw new Error("Pyodide not initialized");
+
+        pyodide.globals.set("wav_bytes_js", new Uint8Array(wavBytes));
+        pyodide.globals.set("grain_ms_js", grainMs);
+        pyodide.globals.set("hop_ms_js", hopMs);
+        pyodide.globals.set("dict_size_js", dictSize);
+        pyodide.globals.set("feature_mode_js", featureMode);
+        pyodide.globals.set("n_mels_js", nMels);
+        pyodide.globals.set("n_mfcc_js", nMfcc);
+
+        const t0 = performance.now();
+        const result = await pyodide.runPythonAsync(
+          "import numpy as np\\n" +
+          "from mosaic_app import wav_bytes_to_stereo_float32, build_mosaic_stereo\\n" +
+          "x, sr, ch = wav_bytes_to_stereo_float32(bytes(wav_bytes_js))\\n" +
+          "yL, yR, meta = build_mosaic_stereo(x, sr, grain_ms=float(grain_ms_js), hop_ms=float(hop_ms_js), dict_size=int(dict_size_js), feature_mode=str(feature_mode_js), n_mels=int(n_mels_js), n_mfcc=int(n_mfcc_js))\\n" +
+          "yL = np.asarray(yL, dtype=np.float32)\\n" +
+          "yR = np.asarray(yR, dtype=np.float32)\\n" +
+          "(meta, yL, yR)\\n"
+        );
+        const t1 = performance.now();
+        log("Mosaic built in " + (t1 - t0).toFixed(0) + " ms", "ok");
+
+        const meta = result.get(0).toJs({ dict_converter: Object.fromEntries });
+        const yLPy = result.get(1);
+        const yRPy = result.get(2);
+        const yL = yLPy.toJs();
+        const yR = yRPy.toJs();
+        yLPy.destroy();
+        yRPy.destroy();
+        result.destroy();
+
+        return { yL, yR, meta };
+      }
+
+      function float32ToAudioBufferStereo(ctx, left, right, sr) {
+        const n = Math.min(left.length, right.length);
+        const buf = ctx.createBuffer(2, n, sr);
+        buf.getChannelData(0).set(left.subarray(0, n));
+        buf.getChannelData(1).set(right.subarray(0, n));
+        return buf;
+      }
+
+      function makeReversedBuffer(ctx, buf) {
+        const out = ctx.createBuffer(buf.numberOfChannels, buf.length, buf.sampleRate);
+        for (let c = 0; c < buf.numberOfChannels; c++) {
+          const src = buf.getChannelData(c);
+          const dst = out.getChannelData(c);
+          for (let i = 0, j = src.length - 1; i < src.length; i++, j--) dst[i] = src[j];
+        }
+        return out;
+      }
+
+      function stopAll() {
+        for (const n of playingNodes) { try { n.stop(); } catch {} }
+        playingNodes = [];
+      }
+
+      // ---- Transformed slice scheduling ----
+      // opts: {rate, gain, pan, rev}
+      function scheduleSliceTransformed(buf, whenSec, startSec, durSec, opts) {
+        const ctx = ensureAudioContext();
+
+        const rate = (opts && typeof opts.rate === "number") ? opts.rate : 1.0;
+        const gainVal = (opts && typeof opts.gain === "number") ? opts.gain : 1.0;
+        const panVal = (opts && typeof opts.pan === "number") ? opts.pan : 0.0;
+        const rev = !!(opts && opts.rev);
+
+        const srcBuf = rev ? (reversedMosaicBuffer || buf) : buf;
+        const start = Math.max(0, Math.min(startSec, srcBuf.duration));
+        const dur = Math.max(0, Math.min(durSec, srcBuf.duration - start));
+
+        // If using reversed buffer, remap start: playing reversed audio from [start, start+dur]
+        // corresponds to original buffer region ending at (buf.duration - start).
+        // For user semantics, "rev" reverses the slice itself while keeping same startSec.
+        let playStart = start;
+        if (rev && reversedMosaicBuffer) {
+          // reversed buffer time t corresponds to original time (D - t)
+          const D = buf.duration;
+          // Original region [start, start+dur] when reversed corresponds to reversed-buffer region [D-(start+dur), D-start]
+          playStart = Math.max(0, Math.min(D - (start + dur), reversedMosaicBuffer.duration));
+        }
+
+        const source = ctx.createBufferSource();
+        source.buffer = srcBuf;
+        source.playbackRate.value = Math.max(0.01, rate);
+
+        const gain = ctx.createGain();
+        gain.gain.value = gainVal;
+
+        // Stereo panner works for stereo sources too (it adjusts balance)
+        const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+        if (panner) panner.pan.value = Math.max(-1, Math.min(1, panVal));
+
+        if (panner) {
+          source.connect(gain);
+          gain.connect(panner);
+          panner.connect(ctx.destination);
+        } else {
+          source.connect(gain);
+          gain.connect(ctx.destination);
+        }
+
+        source.start(whenSec, playStart, dur);
+        playingNodes.push(source);
+
+        // Timeline should advance by actual played duration (dur / rate)
+        const played = (rate !== 0) ? (dur / Math.abs(rate)) : dur;
+        return played;
+      }
+
+      // --- Script Language ---
+      // Lines:
+      // - let name = expr
+      // - cmd(args...)
+      // - loop(n) { ... }
+      // Supported cmd: clip/grains/grain/seq/wait
+      function stripComments(line) {
+        const i = line.indexOf("#");
+        return (i >= 0 ? line.slice(0, i) : line).trim();
+      }
+
+      function tokenizeScript(text) {
+        const lines = text.split("\n").map(stripComments).filter(l => l.length > 0);
+        const tokens = [];
+        const stack = [];
+        let current = tokens;
+
+        for (const line of lines) {
+          const loopMatch = line.match(/^loop\s*\(\s*([0-9]+)\s*\)\s*\{\s*$/);
+          if (loopMatch) {
+            const n = parseInt(loopMatch[1], 10);
+            const block = [];
+            current.push({ type: "loop", n, block });
+            stack.push(current);
+            current = block;
+            continue;
+          }
+          if (line === "}") {
+            if (!stack.length) throw new Error("Unmatched }");
+            current = stack.pop();
+            continue;
+          }
+
+          const letMatch = line.match(/^let\s+([A-Za-z_]\w*)\s*=\s*(.+)$/);
+          if (letMatch) {
+            current.push({ type: "let", name: letMatch[1], expr: letMatch[2] });
+            continue;
+          }
+
+          const cmdMatch = line.match(/^([a-zA-Z_]\w*)\s*\(\s*(.*)\s*\)\s*$/);
+          if (!cmdMatch) throw new Error("Bad line: " + line);
+          current.push({ type: "cmd", cmd: cmdMatch[1], argStr: cmdMatch[2] });
+        }
+
+        if (stack.length) throw new Error("Unclosed loop block");
+        return tokens;
+      }
+
+      function expandLoops(tokens) {
+        const out = [];
+        for (const t of tokens) {
+          if (t.type === "loop") {
+            const inner = expandLoops(t.block);
+            for (let k = 0; k < t.n; k++) out.push(...inner);
+          } else {
+            out.push(t);
+          }
+        }
+        return out;
+      }
+
+      // Simple RNG so scripts are reproducible via seed(n)
+      function makeRng(seed) {
+        let s = (seed >>> 0) || 1;
+        return function() {
+          // LCG
+          s = (1664525 * s + 1013904223) >>> 0;
+          return s / 4294967296;
+        };
+      }
+
+      function makeScriptEnv() {
+        const env = Object.create(null);
+        env.Math = Math;
+
+        // stateful RNG
+        let rng = makeRng(1);
+
+        env.seed = (n) => { rng = makeRng(Number(n) || 1); return n; };
+        env.rand = (a=0, b=1) => a + (b - a) * rng();
+        env.randi = (a, b) => {
+          const lo = Math.min(a, b), hi = Math.max(a, b);
+          return Math.floor(lo + (hi - lo + 1) * rng());
+        };
+        env.choose = (arr) => arr[Math.floor(rng() * arr.length)];
+        env.shuffle = (arr) => {
+          const out = arr.slice();
+          for (let i = out.length - 1; i > 0; i--) {
+            const j = Math.floor(rng() * (i + 1));
+            const tmp = out[i]; out[i] = out[j]; out[j] = tmp;
+          }
+          return out;
+        };
+
+        // user variables stored directly on env
+        env._set = (k, v) => { env[k] = v; return v; };
+
+        return env;
+      }
+
+      function evalExpr(expr, env) {
+        // Allow expressions to reference env vars + helpers.
+        // NOTE: This executes user code. For strict security, you'd want a real parser.
+        return (new Function("env", "with(env){ return (" + expr + "); }"))(env);
+      }
+
+      function evalArgs(argStr, env) {
+        if (argStr.trim() === "") return [];
+        return (new Function("env", "with(env){ return [" + argStr + "]; }"))(env);
+      }
+
+      function normalizeOpts(o) {
+        if (!o || typeof o !== "object") return {};
+        const out = {};
+        if (o.rate != null) out.rate = Number(o.rate);
+        if (o.gain != null) out.gain = Number(o.gain);
+        if (o.pan != null) out.pan = Number(o.pan);
+        if (o.rev != null) out.rev = !!o.rev;
+        return out;
+      }
+
+      function runScriptSchedule(buf, meta, scriptText) {
+        const grainDur = meta.grain_size / meta.sr;
+        const hopDur = meta.hop_size / meta.sr;
+
+        const tokens = expandLoops(tokenizeScript(scriptText));
+        const ctx = ensureAudioContext();
+        const now = ctx.currentTime + 0.05;
+
+        let cursor = now;
+        stopAll();
+
+        const env = makeScriptEnv();
+
+        for (const t of tokens) {
+          if (t.type === "let") {
+            env._set(t.name, evalExpr(t.expr, env));
+            continue;
+          }
+
+          const cmd = t.cmd;
+
+          if (cmd === "wait") {
+            const args = evalArgs(t.argStr, env);
+            cursor += Math.max(0, Number(args[0] || 0));
+            continue;
+          }
+
+          if (cmd === "clip" || cmd === "grains") {
+            const args = evalArgs(t.argStr, env);
+            const startSec = Number(args[0] || 0);
+            const durSec = Number(args[1] || 0);
+            const opts = normalizeOpts(args[2]);
+            cursor += scheduleSliceTransformed(buf, cursor, startSec, durSec, opts);
+            continue;
+          }
+
+          if (cmd === "grain") {
+            const args = evalArgs(t.argStr, env);
+            const index = Number(args[0] || 0);
+            const count = (args.length >= 2 ? Number(args[1]) : 1);
+            const opts = normalizeOpts(args[2]);
+            cursor += scheduleSliceTransformed(buf, cursor, index * hopDur, count * grainDur, opts);
+            continue;
+          }
+
+          if (cmd === "seq") {
+            const args = evalArgs(t.argStr, env);
+            const arr = args[0];
+            const opts = normalizeOpts(args[1]);
+            if (!Array.isArray(arr)) throw new Error("seq expects an array");
+            for (const gi of arr) {
+              cursor += scheduleSliceTransformed(buf, cursor, Number(gi) * hopDur, grainDur, opts);
+            }
+            continue;
+          }
+
+          if (cmd === "seed") {
+            const args = evalArgs(t.argStr, env);
+            env.seed(args[0]);
+            continue;
+          }
+
+          throw new Error("Unknown command: " + cmd);
+        }
+
+        log("Script scheduled: " + (cursor - now).toFixed(2) + " sec total", "ok");
+      }
+
+      async function renderScriptToNewBuffer(buf, meta, scriptText) {
+        // Bake script into a new stereo buffer. Supports rate and rev in a basic way:
+        // - rate: resamples crudely by nearest-neighbor (fast but not hi-fi)
+        // - rev: reverses the slice
+        const grainDur = meta.grain_size / meta.sr;
+        const hopDur = meta.hop_size / meta.sr;
+        const sr = meta.sr;
+
+        const tokens = expandLoops(tokenizeScript(scriptText));
+        const env = makeScriptEnv();
+
+        const ch0 = buf.getChannelData(0);
+        const ch1 = buf.getChannelData(1);
+
+        const outLParts = [];
+        const outRParts = [];
+        let total = 0;
+
+        function sliceLR(startSec, durSec) {
+          const s0 = Math.max(0, Math.floor(startSec * sr));
+          const n = Math.max(0, Math.floor(durSec * sr));
+          const s1 = Math.min(ch0.length, s0 + n);
+          return [ch0.slice(s0, s1), ch1.slice(s0, s1)];
+        }
+
+        function reverseArray(a) {
+          const out = new Float32Array(a.length);
+          for (let i = 0, j = a.length - 1; i < a.length; i++, j--) out[i] = a[j];
+          return out;
+        }
+
+        function resampleNearest(a, rate) {
+          if (!isFinite(rate) || rate <= 0) return a;
+          if (Math.abs(rate - 1.0) < 1e-6) return a;
+          const outLen = Math.max(1, Math.floor(a.length / rate));
+          const out = new Float32Array(outLen);
+          for (let i = 0; i < outLen; i++) {
+            const srcIdx = Math.min(a.length - 1, Math.floor(i * rate));
+            out[i] = a[srcIdx];
+          }
+          return out;
+        }
+
+        function pushTransformed(startSec, durSec, opts) {
+          let [l, r] = sliceLR(startSec, durSec);
+          const rate = (opts && typeof opts.rate === "number") ? opts.rate : 1.0;
+          const gain = (opts && typeof opts.gain === "number") ? opts.gain : 1.0;
+          const pan = (opts && typeof opts.pan === "number") ? opts.pan : 0.0;
+          const rev = !!(opts && opts.rev);
+
+          if (rev) { l = reverseArray(l); r = reverseArray(r); }
+          if (rate && Math.abs(rate - 1.0) > 1e-6) { l = resampleNearest(l, Math.abs(rate)); r = resampleNearest(r, Math.abs(rate)); }
+
+          // simple pan law: balance between channels
+          const p = Math.max(-1, Math.min(1, pan));
+          const leftMul = p > 0 ? (1 - p) : 1;
+          const rightMul = p < 0 ? (1 + p) : 1;
+
+          if (gain !== 1 || leftMul !== 1 || rightMul !== 1) {
+            const l2 = new Float32Array(l.length);
+            const r2 = new Float32Array(r.length);
+            for (let i = 0; i < l.length; i++) l2[i] = l[i] * gain * leftMul;
+            for (let i = 0; i < r.length; i++) r2[i] = r[i] * gain * rightMul;
+            l = l2; r = r2;
+          }
+
+          outLParts.push(l);
+          outRParts.push(r);
+          total += l.length;
+        }
+
+        for (const t of tokens) {
+          if (t.type === "let") {
+            env._set(t.name, evalExpr(t.expr, env));
+            continue;
+          }
+
+          const cmd = t.cmd;
+
+          if (cmd === "wait") {
+            const args = evalArgs(t.argStr, env);
+            const sec = Math.max(0, Number(args[0] || 0));
+            const n = Math.floor(sec * sr);
+            outLParts.push(new Float32Array(n));
+            outRParts.push(new Float32Array(n));
+            total += n;
+            continue;
+          }
+
+          if (cmd === "clip" || cmd === "grains") {
+            const args = evalArgs(t.argStr, env);
+            pushTransformed(Number(args[0] || 0), Number(args[1] || 0), normalizeOpts(args[2]));
+            continue;
+          }
+
+          if (cmd === "grain") {
+            const args = evalArgs(t.argStr, env);
+            const index = Number(args[0] || 0);
+            const count = (args.length >= 2 ? Number(args[1]) : 1);
+            pushTransformed(index * hopDur, count * grainDur, normalizeOpts(args[2]));
+            continue;
+          }
+
+          if (cmd === "seq") {
+            const args = evalArgs(t.argStr, env);
+            const arr = args[0];
+            const opts = normalizeOpts(args[1]);
+            for (const gi of arr) pushTransformed(Number(gi) * hopDur, grainDur, opts);
+            continue;
+          }
+
+          if (cmd === "seed") {
+            const args = evalArgs(t.argStr, env);
+            env.seed(args[0]);
+            continue;
+          }
+        }
+
+        const outL = new Float32Array(total);
+        const outR = new Float32Array(total);
+        let off = 0;
+        for (let i = 0; i < outLParts.length; i++) {
+          outL.set(outLParts[i], off);
+          outR.set(outRParts[i], off);
+          off += outLParts[i].length;
+        }
+
+        return float32ToAudioBufferStereo(ensureAudioContext(), outL, outR, sr);
+      }
+
+      // ---- WAV export ----
+      function audioBufferToWavBlob(buffer, { durationSec = null, channels = "as-is", bitDepth = 16 } = {}) {
+        const sr = buffer.sampleRate;
+
+        const inCh = buffer.numberOfChannels;
+        let outCh = inCh;
+        if (channels === "mono") outCh = 1;
+        if (channels === "stereo") outCh = 2;
+
+        const inFrames = buffer.length;
+        const outFrames = (durationSec != null)
+          ? Math.min(inFrames, Math.max(0, Math.floor(durationSec * sr)))
+          : inFrames;
+
+        function getSample(c, i) {
+          if (channels === "as-is") {
+            const chIdx = Math.min(c, inCh - 1);
+            return buffer.getChannelData(chIdx)[i] || 0;
+          }
+          if (channels === "stereo") {
+            if (inCh === 1) return buffer.getChannelData(0)[i] || 0;
+            const chIdx = (c === 0) ? 0 : (inCh > 1 ? 1 : 0);
+            return buffer.getChannelData(chIdx)[i] || 0;
+          }
+          // mono
+          if (inCh === 1) return buffer.getChannelData(0)[i] || 0;
+          let s = 0;
+          for (let k = 0; k < inCh; k++) s += (buffer.getChannelData(k)[i] || 0);
+          return s / inCh;
+        }
+
+        const isFloat = (bitDepth === "f32");
+        const fmtCode = isFloat ? 3 : 1;
+        const bytesPerSample = isFloat ? 4 : (bitDepth === 16 ? 2 : (bitDepth === 24 ? 3 : 4));
+        const blockAlign = outCh * bytesPerSample;
+        const byteRate = sr * blockAlign;
+        const dataSize = outFrames * blockAlign;
+
+        const ab = new ArrayBuffer(44 + dataSize);
+        const view = new DataView(ab);
+
+        function writeString(offset, str) {
+          for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+        }
+
+        writeString(0, "RIFF");
+        view.setUint32(4, 36 + dataSize, true);
+        writeString(8, "WAVE");
+
+        writeString(12, "fmt ");
+        view.setUint32(16, 16, true);
+        view.setUint16(20, fmtCode, true);
+        view.setUint16(22, outCh, true);
+        view.setUint32(24, sr, true);
+        view.setUint32(28, byteRate, true);
+        view.setUint16(32, blockAlign, true);
+
+        const bits = isFloat ? 32 : (bitDepth === 16 ? 16 : (bitDepth === 24 ? 24 : 32));
+        view.setUint16(34, bits, true);
+
+        writeString(36, "data");
+        view.setUint32(40, dataSize, true);
+
+        let offset = 44;
+        for (let i = 0; i < outFrames; i++) {
+          for (let c = 0; c < outCh; c++) {
+            let s = getSample(c, i);
+            if (s > 1) s = 1;
+            else if (s < -1) s = -1;
+
+            if (isFloat) {
+              view.setFloat32(offset, s, true);
+              offset += 4;
+            } else if (bitDepth === 16) {
+              const v = s < 0 ? Math.round(s * 32768) : Math.round(s * 32767);
+              view.setInt16(offset, v, true);
+              offset += 2;
+            } else if (bitDepth === 24) {
+              let v = s < 0 ? Math.round(s * 8388608) : Math.round(s * 8388607);
+              view.setUint8(offset, v & 0xFF);
+              view.setUint8(offset + 1, (v >> 8) & 0xFF);
+              view.setUint8(offset + 2, (v >> 16) & 0xFF);
+              offset += 3;
+            } else {
+              const v = s < 0 ? Math.round(s * 2147483648) : Math.round(s * 2147483647);
+              view.setInt32(offset, v, true);
+              offset += 4;
+            }
+          }
+        }
+
+        return new Blob([ab], { type: "audio/wav" });
+      }
+
+      function downloadBlob(blob, filename) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+
+      function currentExportOptions() {
+        const durationSec = Number($("exportDur").value);
+        const dur = (Number.isFinite(durationSec) && durationSec > 0) ? durationSec : null;
+        const ch = $("exportCh").value;
+        const bdRaw = $("exportBitDepth").value;
+        const bitDepth = (bdRaw === "f32") ? "f32" : Number(bdRaw);
+        return { durationSec: dur, channels: ch, bitDepth };
+      }
+
+      // --- UI wiring ---
+      $("initBtn").addEventListener("click", async () => {
+        try { $("initBtn").disabled = true; await initPy(); }
+        catch (e) { console.error(e); log(String(e), "err"); $("initBtn").disabled = false; }
+      });
+
+      $("buildBtn").addEventListener("click", async () => {
+        try {
+          const file = $("file").files && $("file").files[0];
+          if (!file) throw new Error("Choose a WAV file first.");
+
+          const grainMs = Number($("grainMs").value);
+          const hopMs = Number($("hopMs").value);
+          const dictSize = Number($("dictSize").value);
+
+          const featureMode = $("featureMode").value;
+          const nMels = Number($("nMels").value);
+          const nMfcc = Number($("nMfcc").value);
+
+          log("Reading " + file.name + "...", "warn");
+          const wavBytes = await file.arrayBuffer();
+
+          log("Building mosaic (" + featureMode + ")...", "warn");
+          const built = await buildMosaicFromWavBytes(wavBytes, grainMs, hopMs, dictSize, featureMode, nMels, nMfcc);
+
+          mosaicMeta = built.meta;
+          log("Output samples: " + built.yL.length + " @ " + mosaicMeta.sr + " Hz", "ok");
+
+          mosaicBuffer = float32ToAudioBufferStereo(ensureAudioContext(), built.yL, built.yR, mosaicMeta.sr);
+          reversedMosaicBuffer = makeReversedBuffer(ensureAudioContext(), mosaicBuffer);
+          lastRenderedBuffer = null;
+
+          $("playMosaicBtn").disabled = false;
+          $("runScriptBtn").disabled = false;
+          $("stopScriptBtn").disabled = false;
+          $("renderScriptBtn").disabled = false;
+          $("stopBtn").disabled = false;
+
+          $("exportMosaicBtn").disabled = false;
+          $("exportRenderedBtn").disabled = true;
+
+          log("Ready.", "ok");
+        } catch (e) { console.error(e); log(String(e), "err"); }
+      });
+
+      $("playMosaicBtn").addEventListener("click", () => {
+        try {
+          if (!mosaicBuffer) throw new Error("Build the mosaic first.");
+          stopAll();
+          const ctx = ensureAudioContext();
+          const src = ctx.createBufferSource();
+          src.buffer = mosaicBuffer;
+          src.connect(ctx.destination);
+          src.start();
+          playingNodes.push(src);
+          log("Playing full mosaic...", "ok");
+        } catch (e) { log(String(e), "err"); }
+      });
+
+      $("stopBtn").addEventListener("click", () => { stopAll(); log("Stopped.", "warn"); });
+      $("stopScriptBtn").addEventListener("click", () => { stopAll(); log("Script stopped.", "warn"); });
+
+      $("runScriptBtn").addEventListener("click", () => {
+        try { if (!mosaicBuffer || !mosaicMeta) throw new Error("Build the mosaic first.");
+          runScriptSchedule(mosaicBuffer, mosaicMeta, $("script").value);
+        } catch (e) { console.error(e); log(String(e), "err"); }
+      });
+
+      $("renderScriptBtn").addEventListener("click", async () => {
+        try {
+          if (!mosaicBuffer || !mosaicMeta) throw new Error("Build the mosaic first.");
+          lastRenderedBuffer = await renderScriptToNewBuffer(mosaicBuffer, mosaicMeta, $("script").value);
+          $("exportRenderedBtn").disabled = false;
+          stopAll();
+          const ctx = ensureAudioContext();
+          const src = ctx.createBufferSource();
+          src.buffer = lastRenderedBuffer;
+          src.connect(ctx.destination);
+          src.start();
+          playingNodes.push(src);
+          log("Playing rendered (baked) script buffer...", "ok");
+        } catch (e) { console.error(e); log(String(e), "err"); }
+      });
+
+      $("exportMosaicBtn").addEventListener("click", () => {
+        try {
+          if (!mosaicBuffer) throw new Error("Build the mosaic first.");
+          const opts = currentExportOptions();
+          const blob = audioBufferToWavBlob(mosaicBuffer, opts);
+          downloadBlob(blob, "mosaic_" + opts.channels + "_" + opts.bitDepth + "bit.wav");
+          log("Exported mosaic WAV", "ok");
+        } catch (e) { console.error(e); log(String(e), "err"); }
+      });
+
+      $("exportRenderedBtn").addEventListener("click", () => {
+        try {
+          if (!lastRenderedBuffer) throw new Error("Render a script first.");
+          const opts = currentExportOptions();
+          const blob = audioBufferToWavBlob(lastRenderedBuffer, opts);
+          downloadBlob(blob, "rendered_" + opts.channels + "_" + opts.bitDepth + "bit.wav");
+          log("Exported rendered WAV", "ok");
+        } catch (e) { console.error(e); log(String(e), "err"); }
+      });
+
+      $("scriptFile").addEventListener("change", async (ev) => {
+        try {
+          const file = ev.target.files && ev.target.files[0];
+          if (!file) return;
+          log("Loading script file: " + file.name, "warn");
+          const text = await file.text();
+          $("script").value = text;
+          log("Script loaded into editor.", "ok");
+        } catch (e) { console.error(e); log(String(e), "err"); }
+      });
+    </script>
+
+    <script type="text/python" id="pycode">
+import io, struct, types, sys
+import numpy as np
+
+# ---------------- WAV decode ----------------
+def _read_wav_pcm(wav_bytes: bytes):
+    bio = io.BytesIO(wav_bytes)
+
+    def read(n):
+        b = bio.read(n)
+        if len(b) != n:
+            raise ValueError("Unexpected EOF while reading WAV")
+        return b
+
+    if read(4) != b"RIFF":
+        raise ValueError("Not a RIFF WAV")
+    _ = read(4)
+    if read(4) != b"WAVE":
+        raise ValueError("Not a WAVE file")
+
+    fmt = None
+    data = None
+
+    while True:
+        hdr = bio.read(8)
+        if len(hdr) == 0:
+            break
+        if len(hdr) != 8:
+            raise ValueError("Bad chunk header")
+        chunk_id, chunk_size = struct.unpack("<4sI", hdr)
+        chunk_id = chunk_id.decode("ascii", errors="ignore")
+        chunk_data = read(chunk_size)
+        if chunk_size % 2 == 1:
+            _ = bio.read(1)
+
+        if chunk_id == "fmt ":
+            fmt = chunk_data
+        elif chunk_id == "data":
+            data = chunk_data
+
+    if fmt is None or data is None:
+        raise ValueError("Missing fmt or data chunk")
+
+    audio_format, num_channels, sample_rate, byte_rate, block_align, bits_per_sample = struct.unpack(
+        "<HHIIHH", fmt[:16]
+    )
+
+    if audio_format == 1:
+        if bits_per_sample == 8:
+            x = np.frombuffer(data, dtype=np.uint8).astype(np.float32)
+            x = (x - 128.0) / 128.0
+        elif bits_per_sample == 16:
+            x = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+        elif bits_per_sample == 24:
+            b = np.frombuffer(data, dtype=np.uint8)
+            if len(b) % 3 != 0:
+                b = b[: len(b) - (len(b) % 3)]
+            b = b.reshape(-1, 3)
+            v = (b[:,0].astype(np.int32) |
+                 (b[:,1].astype(np.int32) << 8) |
+                 (b[:,2].astype(np.int32) << 16))
+            sign = (v & 0x800000) != 0
+            v = v | (sign.astype(np.int32) * -16777216)
+            x = v.astype(np.float32) / 8388608.0
+        elif bits_per_sample == 32:
+            x = np.frombuffer(data, dtype=np.int32).astype(np.float32) / 2147483648.0
+        else:
+            raise ValueError("Unsupported PCM bit depth: %s" % bits_per_sample)
+    elif audio_format == 3:
+        if bits_per_sample == 32:
+            x = np.frombuffer(data, dtype=np.float32).astype(np.float32)
+        elif bits_per_sample == 64:
+            x = np.frombuffer(data, dtype=np.float64).astype(np.float32)
+        else:
+            raise ValueError("Unsupported float bit depth: %s" % bits_per_sample)
+    else:
+        raise ValueError("Unsupported WAV format code: %s" % audio_format)
+
+    if num_channels > 1:
+        x = x.reshape(-1, num_channels)
+    else:
+        x = x.reshape(-1, 1)
+    return x, int(sample_rate), int(num_channels)
+
+def wav_bytes_to_stereo_float32(wav_bytes: bytes):
+    x, sr, ch = _read_wav_pcm(wav_bytes)
+    x = np.clip(x.astype(np.float32), -1.0, 1.0)
+    if ch == 1:
+        x = np.concatenate([x, x], axis=1)
+        ch = 2
+    else:
+        x = x[:, :2]
+        ch = 2
+    return x, sr, ch
+
+# ---------------- Framing ----------------
+def frame_audio_1d(x: np.ndarray, frame_size: int, hop: int):
+    n = len(x)
+    if n < frame_size:
+        x = np.pad(x, (0, frame_size - n))
+        n = len(x)
+    frames = []
+    for start in range(0, n - frame_size + 1, hop):
+        frames.append(x[start:start+frame_size])
+    return np.stack(frames, axis=0)
+
+def frame_audio_stereo(x2: np.ndarray, frame_size: int, hop: int):
+    n = x2.shape[0]
+    if n < frame_size:
+        x2 = np.pad(x2, ((0, frame_size - n), (0, 0)))
+        n = x2.shape[0]
+    frames = []
+    for start in range(0, n - frame_size + 1, hop):
+        frames.append(x2[start:start+frame_size, :])
+    return np.stack(frames, axis=0)  # (F, N, 2)
+
+# ---------------- Features ----------------
+def basic_features(frames_mono: np.ndarray, sr: int):
+    F, N = frames_mono.shape
+    win = np.hanning(N).astype(np.float32)
+    spec = np.fft.rfft(frames_mono * win[None, :], axis=1)
+    mag = (np.abs(spec).astype(np.float32) + 1e-9)
+
+    rms = np.sqrt(np.mean(frames_mono * frames_mono, axis=1) + 1e-12).astype(np.float32)
+    freqs = np.linspace(0, sr/2, mag.shape[1], dtype=np.float32)
+    centroid = (mag * freqs[None, :]).sum(axis=1) / mag.sum(axis=1)
+    centroid = centroid.astype(np.float32)
+    return np.stack([np.log1p(rms), centroid / (sr/2)], axis=1).astype(np.float32)
+
+def hz_to_mel(hz):
+    return 2595.0 * np.log10(1.0 + hz / 700.0)
+
+def mel_to_hz(mel):
+    return 700.0 * (10.0**(mel / 2595.0) - 1.0)
+
+def mel_filterbank(sr: int, n_fft: int, n_mels: int, fmin: float = 0.0, fmax: float = None):
+    if fmax is None:
+        fmax = sr / 2
+    # mel points
+    mmin = hz_to_mel(fmin)
+    mmax = hz_to_mel(fmax)
+    mels = np.linspace(mmin, mmax, n_mels + 2, dtype=np.float32)
+    hz = mel_to_hz(mels)
+    # bin frequencies
+    bins = np.floor((n_fft + 1) * hz / sr).astype(int)
+    bins = np.clip(bins, 0, n_fft//2)
+    fb = np.zeros((n_mels, n_fft//2 + 1), dtype=np.float32)
+    for i in range(n_mels):
+        b0, b1, b2 = bins[i], bins[i+1], bins[i+2]
+        if b1 == b0:
+            b1 = b0 + 1
+        if b2 == b1:
+            b2 = b1 + 1
+        # up-slope
+        for b in range(b0, b1):
+            fb[i, b] = (b - b0) / max(1, (b1 - b0))
+        # down-slope
+        for b in range(b1, b2):
+            fb[i, b] = (b2 - b) / max(1, (b2 - b1))
+    return fb
+
+def dct_matrix(n_mfcc: int, n_mels: int):
+    # DCT-II basis (no orthonormal scaling; we normalize features later)
+    n = np.arange(n_mels, dtype=np.float32)
+    k = np.arange(n_mfcc, dtype=np.float32)[:, None]
+    return np.cos(np.pi / n_mels * (n + 0.5) * k).astype(np.float32)
+
+def mfcc_features(frames_mono: np.ndarray, sr: int, n_mels: int = 40, n_mfcc: int = 13):
+    F, N = frames_mono.shape
+    win = np.hanning(N).astype(np.float32)
+    spec = np.fft.rfft(frames_mono * win[None, :], axis=1)
+    power = (np.abs(spec) ** 2).astype(np.float32)
+
+    fb = mel_filterbank(sr, n_fft=N, n_mels=n_mels)
+    melE = np.dot(power, fb.T) + 1e-9  # (F, n_mels)
+    logmel = np.log(melE).astype(np.float32)
+
+    D = dct_matrix(n_mfcc, n_mels)     # (n_mfcc, n_mels)
+    mfcc = np.dot(logmel, D.T).astype(np.float32)  # (F, n_mfcc)
+
+    # cepstral mean/var norm per coefficient
+    mu = mfcc.mean(axis=0, keepdims=True)
+    sd = mfcc.std(axis=0, keepdims=True) + 1e-6
+    mfcc = (mfcc - mu) / sd
+    return mfcc
+
+# ---------------- Matching ----------------
+def _pick_dictionary(frames_st: np.ndarray, feats: np.ndarray, dict_size: int, seed: int = 0):
+    rng = np.random.default_rng(seed)
+    # diversify by first component (roughly)
+    order = np.argsort(feats[:, 0])
+    idx = order
+    if dict_size >= len(idx):
+        pick = idx
+    else:
+        base = np.linspace(0, len(idx)-1, dict_size).astype(int)
+        jitter = rng.integers(-3, 4, size=dict_size)
+        pick = np.clip(base + jitter, 0, len(idx)-1)
+        pick = idx[pick]
+    return frames_st[pick].copy(), feats[pick].copy()
+
+def _match_nearest(target_feats: np.ndarray, dict_feats: np.ndarray):
+    # brute-force (T,D,F)
+    diff = target_feats[:, None, :] - dict_feats[None, :, :]
+    dist2 = (diff * diff).sum(axis=2)
+    return np.argmin(dist2, axis=1).astype(np.int32)
+
+def overlap_add_stereo(frames_st: np.ndarray, hop: int):
+    F, N, C = frames_st.shape
+    out_len = hop * (F - 1) + N
+    y = np.zeros((out_len, 2), dtype=np.float32)
+    win = np.hanning(N).astype(np.float32)
+    wsum = np.zeros(out_len, dtype=np.float32)
+
+    for i in range(F):
+        start = i * hop
+        y[start:start+N, 0] += frames_st[i, :, 0] * win
+        y[start:start+N, 1] += frames_st[i, :, 1] * win
+        wsum[start:start+N] += win
+
+    y[:, 0] = y[:, 0] / np.maximum(wsum, 1e-6)
+    y[:, 1] = y[:, 1] / np.maximum(wsum, 1e-6)
+
+    m = np.max(np.abs(y)) + 1e-9
+    if m > 1.0:
+        y = y / m
+    return y
+
+def build_mosaic_stereo(x_stereo: np.ndarray, sr: int,
+                       grain_ms: float = 40.0, hop_ms: float = 20.0, dict_size: int = 512,
+                       feature_mode: str = "basic", n_mels: int = 40, n_mfcc: int = 13):
+    grain_size = max(16, int(sr * (grain_ms / 1000.0)))
+    hop_size = max(8, int(sr * (hop_ms / 1000.0)))
+
+    x_mono = np.mean(x_stereo, axis=1).astype(np.float32)
+
+    frames_mono = frame_audio_1d(x_mono, grain_size, hop_size)         # (F,N)
+    frames_st   = frame_audio_stereo(x_stereo, grain_size, hop_size)   # (F,N,2)
+
+    feature_mode = (feature_mode or "basic").lower().strip()
+    if feature_mode == "mfcc":
+        feats = mfcc_features(frames_mono, sr, n_mels=int(n_mels), n_mfcc=int(n_mfcc))
+    else:
+        feats = basic_features(frames_mono, sr)
+
+    dict_frames_st, dict_feats = _pick_dictionary(frames_st, feats, dict_size=dict_size, seed=0)
+    match_idx = _match_nearest(feats, dict_feats)
+    out_frames_st = dict_frames_st[match_idx]                          # (F,N,2)
+
+    y = overlap_add_stereo(out_frames_st, hop_size)                    # (T,2)
+    meta = {"sr": int(sr), "grain_size": int(grain_size), "hop_size": int(hop_size),
+            "num_frames": int(frames_mono.shape[0]), "dict_size": int(dict_frames_st.shape[0]),
+            "feature_mode": feature_mode, "n_mels": int(n_mels), "n_mfcc": int(n_mfcc)}
+    return y[:,0].astype(np.float32), y[:,1].astype(np.float32), meta
+
+m = types.ModuleType("mosaic_app")
+m.wav_bytes_to_stereo_float32 = wav_bytes_to_stereo_float32
+m.build_mosaic_stereo = build_mosaic_stereo
+sys.modules["mosaic_app"] = m
+    </script>
+  </body>
+</html>

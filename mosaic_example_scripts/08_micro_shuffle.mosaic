@@ -1,0 +1,9 @@
+# 08_micro_shuffle.mosaic
+# Micro shuffle: alternating tiny offsets.
+loop(6) {
+  clip(8.00, 0.07)
+  clip(8.06, 0.07)
+  clip(8.03, 0.07)
+  clip(8.09, 0.07)
+}
+clip(8.20, 1.0)

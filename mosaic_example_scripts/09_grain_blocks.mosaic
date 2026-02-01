@@ -1,0 +1,8 @@
+# 09_grain_blocks.mosaic
+# Grain blocks (index-based): four different textures, repeated.
+loop(3) {
+  grain(100, 8)
+  grain(220, 8)
+  grain(340, 8)
+  grain(460, 8)
+}
